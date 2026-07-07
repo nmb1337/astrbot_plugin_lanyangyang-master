@@ -277,55 +277,197 @@ class LanYangYangGroupManager(Star):
         else:
             raw_lines = [str(line) for line in lines]
 
-        width = 980
-        line_height = 42
-        body_lines = []
-        for line in raw_lines:
-            body_lines.extend(self._wrap_text(line, max_chars=28) or [""])
-        height = max(620, 390 + len(body_lines) * line_height)
-
-        img = Image.new("RGB", (width, height), "#fff7cf")
-        draw = ImageDraw.Draw(img)
-        font_title = self._font(48, bold=True)
-        font_name = self._font(28, bold=True)
-        font_body = self._font(31)
-        font_small = self._font(24)
-
-        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=36, fill="#fffbe8")
-        draw.rounded_rectangle((44, 44, width - 44, 190), radius=30, fill="#d9f2c7")
-        draw.ellipse((760, -70, 1070, 240), fill="#ffe68a")
-        draw.ellipse((-80, 350, 220, 650), fill="#e6f6d6")
-
-        self._draw_sheep_badge(draw, 800, 82)
-        avatar = self._load_avatar(str(event.get_sender_id()))
-        if avatar:
-            img.paste(avatar, (72, 68), avatar)
+        if "菜单" in title:
+            img = self._render_menu_image(event)
         else:
-            draw.ellipse((72, 68, 152, 148), fill="#ffffff", outline="#8ac17b", width=4)
-
-        sender_name = event.get_sender_name() or str(event.get_sender_id())
-        draw.text((174, 66), title, font=font_title, fill="#4f7b42")
-        draw.text((176, 128), f"呼叫人：{sender_name}", font=font_name, fill="#6f865d")
-
-        body_top = 220
-        draw.rounded_rectangle(
-            (64, body_top, width - 64, height - 120),
-            radius=26,
-            fill="#ffffff",
-            outline="#eadf9a",
-            width=3,
-        )
-        y = body_top + 34
-        for line in body_lines:
-            draw.text((96, y), line, font=font_body, fill="#41503c")
-            y += line_height
-
-        footer = "懒羊羊主题卡片回复 | 发送“菜单”无需唤醒词"
-        draw.text((70, height - 74), footer, font=font_small, fill="#8a936f")
+            img = self._render_reply_image(event, title, raw_lines)
 
         path = self.cache_dir / f"reply_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
         img.save(path, "PNG", optimize=True)
         return path
+
+    def _render_menu_image(self, event: AstrMessageEvent):
+        width, height = 980, 560
+        img = Image.new("RGBA", (width, height), "#fff1a6")
+        draw = ImageDraw.Draw(img)
+
+        panel = (26, 26, width - 26, height - 26)
+        draw.rounded_rectangle(panel, radius=38, fill="#ffe493", outline="#9c7441", width=4)
+        self._draw_checker_pattern(draw, panel, cell=34)
+        self._draw_corner_sparkles(draw, width, height)
+
+        self._draw_sheep_car(draw, 255, 312)
+        self._draw_mini_sheep(draw, 835, 112, scale=0.92)
+        self._draw_mini_sheep(draw, 880, 438, scale=0.72)
+        self._draw_mini_sheep(draw, 108, 446, scale=0.62)
+
+        font_title = self._font(50, bold=True)
+        font_pill = self._font(31, bold=True)
+        font_small = self._font(21)
+        font_badge = self._font(24, bold=True)
+        font_meta = self._font(22)
+
+        draw.text((520, 70), "懒羊羊大王", font=font_title, fill="#7b2638")
+        sender_name = event.get_sender_name() or str(event.get_sender_id())
+        draw.text((50, 36), f"LV26 黄金  {sender_name}", font=font_meta, fill="#8c7f67")
+
+        labels = ["群管", "保安", "统计", "时规", "乐园"]
+        y = 145
+        for idx, label in enumerate(labels, 1):
+            self._draw_menu_pill(draw, 485, y, 345, 52, idx, label, font_pill)
+            y += 74
+
+        draw.text((82, 82), "Ww", font=font_badge, fill="#fff7df", stroke_width=3, stroke_fill="#a9804a")
+        draw.text((486, 504), "菜单 / 统计 / 禁言 / 撤回 / 踢出群", font=font_small, fill="#8f5a3b")
+        draw.text((812, 39), "⌒", font=self._font(34, bold=True), fill="#8a6b48")
+        return img.convert("RGB")
+
+    def _render_reply_image(self, event: AstrMessageEvent, title: str, raw_lines: list[str]):
+        width = 980
+        line_height = 48
+        body_lines = []
+        for line in raw_lines:
+            body_lines.extend(self._wrap_text(line, max_chars=22) or [""])
+        height = max(560, 260 + len(body_lines) * line_height)
+
+        background = self._load_reply_background(width, height)
+        img = background or Image.new("RGBA", (width, height), "#fff1a6")
+        draw = ImageDraw.Draw(img)
+        if background:
+            panel = (36, 34, width - 36, height - 34)
+            draw.rounded_rectangle(panel, radius=38, outline="#7e5c3a", width=4)
+            self._draw_corner_sparkles(draw, width, height)
+        else:
+            panel = (26, 26, width - 26, height - 26)
+            draw.rounded_rectangle(panel, radius=38, fill="#ffe493", outline="#9c7441", width=4)
+            self._draw_checker_pattern(draw, panel, cell=34)
+            self._draw_corner_sparkles(draw, width, height)
+            self._draw_sheep_car(draw, 232, min(335, height - 190), scale=0.82)
+            self._draw_mini_sheep(draw, 835, 110, scale=0.82)
+
+        font_title = self._font(46, bold=True)
+        font_body = self._font(30, bold=True)
+        font_small = self._font(22)
+
+        sender_name = event.get_sender_name() or str(event.get_sender_id())
+        title_x = 92 if background else 460
+        draw.text((title_x, 70), title, font=font_title, fill="#7b2638", stroke_width=2, stroke_fill="#fff3cd")
+        draw.text((title_x + 2, 124), f"呼叫人：{sender_name}", font=font_small, fill="#8f5a3b")
+
+        box_top = 170
+        box_bottom = height - 76
+        box = (78, box_top, 548, box_bottom) if background else (430, box_top, 875, box_bottom)
+        text_x = 110 if background else 462
+        fill = (255, 254, 246, 228) if background else "#fffef6"
+        draw.rounded_rectangle(box, radius=28, fill=fill, outline="#efd27a", width=3)
+        y = box_top + 26
+        for line in body_lines:
+            draw.text((text_x, y), line, font=font_body, fill="#6c3040")
+            y += line_height
+
+        draw.text((68, height - 62), "懒羊羊主题卡片回复", font=font_small, fill="#8f5a3b")
+        return img.convert("RGB")
+
+    def _load_reply_background(self, width: int, height: int):
+        path = self.base_dir / "assets" / "lanyangyang_reply_bg.png"
+        if not path.exists():
+            return None
+        try:
+            with Image.open(path) as raw:
+                image = raw.convert("RGBA")
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            return ImageOps.fit(image, (width, height), method=resample, centering=(0.5, 1.0))
+        except Exception:
+            logger.exception("加载懒羊羊背景图失败，已使用默认绘制背景")
+            return None
+
+    def _draw_checker_pattern(self, draw: Any, box: tuple[int, int, int, int], cell: int = 34):
+        left, top, right, bottom = box
+        for y in range(top, bottom, cell):
+            for x in range(left, right, cell):
+                fill = "#ffd36f" if ((x // cell) + (y // cell)) % 2 == 0 else "#fff3bd"
+                draw.rectangle((x, y, min(x + cell, right), min(y + cell, bottom)), fill=fill)
+        draw.rounded_rectangle(box, radius=38, outline="#9c7441", width=4)
+
+    def _draw_corner_sparkles(self, draw: Any, width: int, height: int):
+        color = "#fff9df"
+        for x, y, r in [(74, 62, 6), (108, 92, 4), (900, 82, 5), (870, 500, 5), (122, height - 82, 4)]:
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+        for x, y in [(160, 92), (430, 108), (402, 452), (904, 398)]:
+            draw.line((x - 10, y, x + 10, y), fill=color, width=3)
+            draw.line((x, y - 10, x, y + 10), fill=color, width=3)
+
+    def _draw_menu_pill(self, draw: Any, x: int, y: int, w: int, h: int, idx: int, label: str, font: Any):
+        shadow = (x + 5, y + 6, x + w + 5, y + h + 6)
+        draw.rounded_rectangle(shadow, radius=h // 2, fill="#e4b75e")
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill="#fffdf8", outline="#efc96d", width=3)
+        draw.ellipse((x + 16, y + 10, x + 48, y + 42), fill="#ffd971", outline="#efbd55", width=2)
+        self._draw_centered_text(draw, (x + 62, y, x + w, y + h), label, font, "#713044")
+        self._draw_centered_text(draw, (x + 16, y + 10, x + 48, y + 42), str(idx), self._font(18, bold=True), "#fffdf8")
+
+    def _draw_sheep_car(self, draw: Any, cx: int, cy: int, scale: float = 1.0):
+        def s(value: int) -> int:
+            return int(value * scale)
+
+        x, y = cx, cy
+        outline = "#8a6147"
+        draw.rounded_rectangle((x - s(150), y - s(18), x + s(150), y + s(76)), radius=s(42), fill="#f4c35f", outline=outline, width=s(5))
+        draw.pieslice((x - s(118), y - s(110), x + s(82), y + s(74)), 185, 358, fill="#ffe59d", outline=outline, width=s(5))
+        draw.ellipse((x - s(133), y + s(50), x - s(74), y + s(108)), fill="#6a5b55", outline=outline, width=s(4))
+        draw.ellipse((x + s(82), y + s(50), x + s(141), y + s(108)), fill="#6a5b55", outline=outline, width=s(4))
+        draw.ellipse((x - s(116), y + s(63), x - s(90), y + s(89)), fill="#f8df9a")
+        draw.ellipse((x + s(99), y + s(63), x + s(125), y + s(89)), fill="#f8df9a")
+        draw.ellipse((x - s(161), y + s(3), x - s(125), y + s(39)), fill="#f48f4e", outline=outline, width=s(3))
+        draw.ellipse((x + s(121), y + s(3), x + s(157), y + s(39)), fill="#f48f4e", outline=outline, width=s(3))
+        draw.rounded_rectangle((x - s(42), y + s(66), x + s(64), y + s(92)), radius=s(8), fill="#fff6cf", outline=outline, width=s(3))
+
+        duck_x, duck_y = x - s(95), y - s(60)
+        draw.ellipse((duck_x - s(26), duck_y - s(16), duck_x + s(26), duck_y + s(34)), fill="#ffd34f", outline=outline, width=s(3))
+        draw.ellipse((duck_x - s(17), duck_y - s(43), duck_x + s(19), duck_y - s(7)), fill="#ffe06b", outline=outline, width=s(3))
+        draw.polygon([(duck_x + s(16), duck_y - s(24)), (duck_x + s(42), duck_y - s(15)), (duck_x + s(16), duck_y - s(5))], fill="#f08c44", outline=outline)
+        draw.ellipse((duck_x - s(5), duck_y - s(27), duck_x + s(2), duck_y - s(20)), fill="#5d4a3f")
+
+        sheep_x, sheep_y = x - s(12), y - s(120)
+        self._draw_sheep_head(draw, sheep_x, sheep_y, scale=scale * 1.25, mouth_open=True)
+        draw.rounded_rectangle((sheep_x - s(55), sheep_y + s(76), sheep_x + s(52), sheep_y + s(145)), radius=s(28), fill="#fff7df", outline=outline, width=s(4))
+        draw.arc((sheep_x - s(92), sheep_y + s(50), sheep_x - s(32), sheep_y + s(128)), 100, 260, fill=outline, width=s(5))
+        draw.arc((sheep_x + s(30), sheep_y + s(50), sheep_x + s(90), sheep_y + s(128)), -80, 80, fill=outline, width=s(5))
+
+    def _draw_mini_sheep(self, draw: Any, x: int, y: int, scale: float = 1.0):
+        self._draw_sheep_head(draw, x, y, scale=scale, mouth_open=False)
+        r = int(38 * scale)
+        draw.rounded_rectangle((x - r, y + int(40 * scale), x + r, y + int(92 * scale)), radius=int(20 * scale), fill="#fff7df", outline="#8a6147", width=max(2, int(3 * scale)))
+        draw.ellipse((x - int(20 * scale), y + int(57 * scale), x - int(8 * scale), y + int(69 * scale)), fill="#8a6147")
+        draw.ellipse((x + int(8 * scale), y + int(57 * scale), x + int(20 * scale), y + int(69 * scale)), fill="#8a6147")
+
+    def _draw_sheep_head(self, draw: Any, x: int, y: int, scale: float = 1.0, mouth_open: bool = False):
+        def s(value: int) -> int:
+            return int(value * scale)
+
+        outline = "#8a6147"
+        wool = "#fffdf6"
+        for dx, dy, r in [(-40, -28, 26), (-10, -45, 30), (26, -42, 28), (52, -18, 24), (-55, 6, 25), (-30, 26, 27), (20, 24, 29), (55, 8, 24)]:
+            draw.ellipse((x + s(dx - r), y + s(dy - r), x + s(dx + r), y + s(dy + r)), fill=wool, outline=outline, width=max(2, s(3)))
+        draw.rounded_rectangle((x - s(45), y - s(16), x + s(45), y + s(62)), radius=s(28), fill="#ffe8c6", outline=outline, width=max(2, s(4)))
+        draw.polygon([(x - s(62), y - s(16)), (x - s(92), y - s(38)), (x - s(76), y + s(10))], fill="#7d513d", outline=outline)
+        draw.polygon([(x + s(62), y - s(16)), (x + s(92), y - s(38)), (x + s(76), y + s(10))], fill="#7d513d", outline=outline)
+        draw.ellipse((x - s(20), y + s(16), x - s(10), y + s(27)), fill="#5a4338")
+        draw.ellipse((x + s(12), y + s(16), x + s(22), y + s(27)), fill="#5a4338")
+        draw.ellipse((x - s(5), y + s(30), x + s(8), y + s(39)), fill="#f08b80")
+        if mouth_open:
+            draw.ellipse((x - s(18), y + s(40), x + s(20), y + s(78)), fill="#7b2638", outline=outline, width=max(2, s(3)))
+            draw.ellipse((x - s(8), y + s(57), x + s(14), y + s(75)), fill="#f28b8e")
+        else:
+            draw.arc((x - s(16), y + s(36), x + s(18), y + s(56)), 15, 165, fill=outline, width=max(2, s(3)))
+
+    def _draw_centered_text(self, draw: Any, box: tuple[int, int, int, int], text: str, font: Any, fill: str):
+        left, top, right, bottom = box
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        x = left + (right - left - text_w) / 2
+        y = top + (bottom - top - text_h) / 2 - 2
+        draw.text((x, y), text, font=font, fill=fill)
 
     def _draw_sheep_badge(self, draw: Any, x: int, y: int):
         wool = "#ffffff"
