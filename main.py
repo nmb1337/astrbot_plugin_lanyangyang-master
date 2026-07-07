@@ -1,4 +1,5 @@
 import json
+import hashlib
 import random
 import re
 import time
@@ -54,10 +55,15 @@ class LanYangYangGroupManager(Star):
         await self._record_invite_from_raw(event)
 
         text = (event.message_str or "").strip()
-        if text in self._list_config(
-            "direct_menu_keywords", ["菜单", "帮助", "懒羊羊菜单"]
-        ):
-            yield await self._image_result(event, "懒羊羊菜单", self._menu_lines())
+        direct_result = await self._direct_result(event, text)
+        if direct_result:
+            yield direct_result
+            event.stop_event()
+            return
+
+        moderation_result = await self._moderation_result(event, text)
+        if moderation_result:
+            yield moderation_result
             event.stop_event()
             return
 
@@ -71,6 +77,21 @@ class LanYangYangGroupManager(Star):
         """显示懒羊羊群管菜单。"""
         yield await self._image_result(event, "懒羊羊菜单", self._menu_lines())
         event.stop_event()
+
+    @filter.command("今日老公", alias={"抽老公"})
+    async def today_husband(self, event: AstrMessageEvent):
+        """抽取今日老公。"""
+        yield await self._today_partner_result(event, "今日老公")
+
+    @filter.command("今日老婆", alias={"抽老婆"})
+    async def today_wife(self, event: AstrMessageEvent):
+        """抽取今日老婆。"""
+        yield await self._today_partner_result(event, "今日老婆")
+
+    @filter.command("今日小三", alias={"抽小三"})
+    async def today_affair(self, event: AstrMessageEvent):
+        """抽取今日小三。"""
+        yield await self._today_partner_result(event, "今日小三")
 
     @filter.command("发言统计", alias={"统计", "水群排行"})
     async def speech_rank(self, event: AstrMessageEvent):
@@ -218,16 +239,216 @@ class LanYangYangGroupManager(Star):
         yield await self._image_result(event, "批量撤回结果", lines)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("踢出群", alias={"踢出", "踢"})
+    @filter.command("踢出群", alias={"踢出", "踢", "踢了"})
     async def kick(self, event: AstrMessageEvent):
         """踢出群成员，不拉黑。"""
         yield await self._kick_impl(event, reject=False)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("踢黑", alias={"拉黑踢出"})
+    @filter.command("踢黑", alias={"拉黑踢出", "拉黑"})
     async def kick_black(self, event: AstrMessageEvent):
         """踢出并拒绝再次加群。"""
         yield await self._kick_impl(event, reject=True)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("禁我")
+    async def mute_me(self, event: AstrMessageEvent):
+        """禁言自己。"""
+        group_id = self._group_id(event)
+        duration = self._extract_duration(event, default_seconds=600)
+        if not group_id:
+            yield await self._image_result(event, "禁我", ["这个功能要在群聊里用。"])
+            return
+        ok, msg = await self._onebot_call(
+            event,
+            "set_group_ban",
+            group_id=int(group_id),
+            user_id=int(event.get_sender_id()),
+            duration=duration,
+        )
+        yield await self._image_result(event, "禁我结果", [f"禁言自己 {self._human_duration(duration)}", msg] if ok else [msg])
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("开启全禁", alias={"全禁"})
+    async def whole_ban_on(self, event: AstrMessageEvent):
+        yield await self._whole_ban_result(event, True)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("关闭全禁", alias={"解除全禁"})
+    async def whole_ban_off(self, event: AstrMessageEvent):
+        yield await self._whole_ban_result(event, False)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("改名", alias={"设置群名片"})
+    async def set_member_card(self, event: AstrMessageEvent):
+        yield await self._set_card_result(event, self._extract_target_user(event), self._clean_command_text(event))
+
+    @filter.command("改我")
+    async def set_my_card(self, event: AstrMessageEvent):
+        yield await self._set_card_result(event, (str(event.get_sender_id()), event.get_sender_name()), self._clean_command_text(event))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("头衔", alias={"改头衔"})
+    async def set_special_title(self, event: AstrMessageEvent):
+        yield await self._set_title_result(event, self._extract_target_user(event), self._clean_command_text(event))
+
+    @filter.command("申请头衔")
+    async def apply_special_title(self, event: AstrMessageEvent):
+        yield await self._set_title_result(event, (str(event.get_sender_id()), event.get_sender_name()), self._clean_command_text(event))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("上管")
+    async def admin_on(self, event: AstrMessageEvent):
+        yield await self._set_admin_result(event, True)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("下管")
+    async def admin_off(self, event: AstrMessageEvent):
+        yield await self._set_admin_result(event, False)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设精", alias={"设置精华"})
+    async def set_essence(self, event: AstrMessageEvent):
+        yield await self._essence_result(event, "set_essence_msg", "设精")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("移精", alias={"移除精华"})
+    async def delete_essence(self, event: AstrMessageEvent):
+        yield await self._essence_result(event, "delete_essence_msg", "移精")
+
+    @filter.command("查看群精华")
+    async def list_essence(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        if not group_id:
+            yield await self._image_result(event, "查看群精华", ["这个功能要在群聊里用。"])
+            return
+        ok, data = await self._onebot_call_raw(event, "get_essence_msg_list", group_id=int(group_id))
+        if not ok:
+            yield await self._image_result(event, "查看群精华", [str(data)])
+            return
+        rows = data if isinstance(data, list) else []
+        lines = [f"共 {len(rows)} 条群精华。"] + [
+            f"{idx}. {row.get('sender_nick') or row.get('sender_id')}: {row.get('message_id')}"
+            for idx, row in enumerate(rows[:8], 1)
+            if isinstance(row, dict)
+        ]
+        yield await self._image_result(event, "查看群精华", lines)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设置群名")
+    async def set_group_name(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        name = self._command_args(event).strip()
+        if not group_id or not name:
+            yield await self._image_result(event, "设置群名", ["用法：设置群名 新群名"])
+            return
+        ok, msg = await self._onebot_call(event, "set_group_name", group_id=int(group_id), group_name=name)
+        yield await self._image_result(event, "设置群名", [f"新群名：{name}", msg] if ok else [msg])
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设置群头像")
+    async def set_group_portrait(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        image = self._extract_image_url(event)
+        if not group_id or not image:
+            yield await self._image_result(event, "设置群头像", ["用法：引用/发送图片并输入 设置群头像"])
+            return
+        ok, msg = await self._onebot_call(event, "set_group_portrait", group_id=int(group_id), file=image, cache=0)
+        yield await self._image_result(event, "设置群头像", [msg])
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("发布群公告")
+    async def send_group_notice(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        content = self._command_args(event).strip()
+        image = self._extract_image_url(event)
+        if not group_id or not content:
+            yield await self._image_result(event, "发布群公告", ["用法：发布群公告 公告内容，可同时带图"])
+            return
+        payload = {"group_id": int(group_id), "content": content}
+        if image:
+            payload["image"] = image
+        ok, msg = await self._onebot_call(event, "_send_group_notice", **payload)
+        yield await self._image_result(event, "发布群公告", [content, msg] if ok else [msg])
+
+    @filter.command("查看群公告")
+    async def get_group_notice(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        if not group_id:
+            yield await self._image_result(event, "查看群公告", ["这个功能要在群聊里用。"])
+            return
+        ok, data = await self._onebot_call_raw(event, "_get_group_notice", group_id=int(group_id))
+        if not ok:
+            yield await self._image_result(event, "查看群公告", [str(data)])
+            return
+        rows = data if isinstance(data, list) else []
+        lines = [f"共 {len(rows)} 条公告。"] + [
+            f"{idx}. {(row.get('message') or row.get('content') or '')[:22]}"
+            for idx, row in enumerate(rows[:8], 1)
+            if isinstance(row, dict)
+        ]
+        yield await self._image_result(event, "查看群公告", lines)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("禁词禁言")
+    async def banned_word_mute_seconds(self, event: AstrMessageEvent):
+        yield await self._set_group_setting_result(event, "禁词禁言", "banned_word_mute_seconds", self._extract_duration(event, 600))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设置禁词")
+    async def set_banned_words(self, event: AstrMessageEvent):
+        text = self._command_args(event).strip()
+        words = [item.strip() for item in re.split(r"[，,\s]+", text) if item.strip()]
+        settings = self._group_settings(event)
+        if text.startswith("+"):
+            settings["banned_words"] = sorted(set(settings.get("banned_words", [])) | set(word.lstrip("+") for word in words))
+        elif text.startswith("-"):
+            remove = {word.lstrip("-") for word in words}
+            settings["banned_words"] = [word for word in settings.get("banned_words", []) if word not in remove]
+        else:
+            settings["banned_words"] = words
+        self._save_stats()
+        yield await self._image_result(event, "设置禁词", [f"当前禁词：{'、'.join(settings.get('banned_words', [])) or '空'}"])
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("内置禁词")
+    async def builtin_banned_words(self, event: AstrMessageEvent):
+        value = "关" not in self._clean_command_text(event)
+        yield await self._set_group_setting_result(event, "内置禁词", "builtin_banned_words", value)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("刷屏禁言")
+    async def spam_mute_seconds(self, event: AstrMessageEvent):
+        yield await self._set_group_setting_result(event, "刷屏禁言", "spam_mute_seconds", self._extract_duration(event, 600))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("投票禁言")
+    async def vote_mute(self, event: AstrMessageEvent):
+        yield await self._start_vote_mute(event)
+
+    @filter.command("赞同禁言")
+    async def vote_agree(self, event: AstrMessageEvent):
+        yield await self._vote_mute_result(event, agree=True)
+
+    @filter.command("反对禁言")
+    async def vote_disagree(self, event: AstrMessageEvent):
+        yield await self._vote_mute_result(event, agree=False)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("开启宵禁")
+    async def night_curfew_on(self, event: AstrMessageEvent):
+        yield await self._set_group_setting_result(event, "开启宵禁", "night_curfew", True)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("关闭宵禁")
+    async def night_curfew_off(self, event: AstrMessageEvent):
+        yield await self._set_group_setting_result(event, "关闭宵禁", "night_curfew", False)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("进群审核")
+    async def join_approval(self, event: AstrMessageEvent):
+        value = "关" not in self._clean_command_text(event)
+        yield await self._set_group_setting_result(event, "进群审核", "join_approval", value)
 
     @filter.on_decorating_result()
     async def decorate_text_reply(self, event: AstrMessageEvent):
@@ -259,6 +480,122 @@ class LanYangYangGroupManager(Star):
         lines = [f"{action}：{target[1] or target[0]}", msg]
         return await self._image_result(event, f"{action}结果", lines if ok else [msg])
 
+    async def _whole_ban_result(self, event: AstrMessageEvent, enable: bool):
+        group_id = self._group_id(event)
+        if not group_id:
+            return await self._image_result(event, "全体禁言", ["这个功能要在群聊里用。"])
+        ok, msg = await self._onebot_call(event, "set_group_whole_ban", group_id=int(group_id), enable=enable)
+        title = "开启全禁" if enable else "关闭全禁"
+        return await self._image_result(event, title, [msg])
+
+    async def _set_card_result(self, event: AstrMessageEvent, target: tuple[str, str] | None, card: str):
+        group_id = self._group_id(event)
+        if not group_id or not target or not card:
+            return await self._image_result(event, "改名", ["用法：改名 新名 @群友，或 改我 新名"])
+        ok, msg = await self._onebot_call(
+            event,
+            "set_group_card",
+            group_id=int(group_id),
+            user_id=int(target[0]),
+            card=card,
+        )
+        return await self._image_result(event, "改名结果", [f"{target[1] or target[0]} -> {card}", msg] if ok else [msg])
+
+    async def _set_title_result(self, event: AstrMessageEvent, target: tuple[str, str] | None, title: str):
+        group_id = self._group_id(event)
+        if not group_id or not target or not title:
+            return await self._image_result(event, "头衔", ["用法：头衔 新头衔 @群友，或 申请头衔 新头衔"])
+        ok, msg = await self._onebot_call(
+            event,
+            "set_group_special_title",
+            group_id=int(group_id),
+            user_id=int(target[0]),
+            special_title=title,
+            duration=-1,
+        )
+        return await self._image_result(event, "头衔结果", [f"{target[1] or target[0]}：{title}", msg] if ok else [msg])
+
+    async def _set_admin_result(self, event: AstrMessageEvent, enable: bool):
+        group_id = self._group_id(event)
+        target = self._extract_target_user(event)
+        if not group_id or not target:
+            return await self._image_result(event, "群管设置", ["用法：上管 @群友，或 下管 @群友"])
+        ok, msg = await self._onebot_call(
+            event,
+            "set_group_admin",
+            group_id=int(group_id),
+            user_id=int(target[0]),
+            enable=enable,
+        )
+        title = "上管" if enable else "下管"
+        return await self._image_result(event, f"{title}结果", [f"{target[1] or target[0]}", msg] if ok else [msg])
+
+    async def _essence_result(self, event: AstrMessageEvent, action: str, title: str):
+        message_id = self._extract_reply_message_id(event) or self._extract_first_number(event)
+        if not message_id:
+            return await self._image_result(event, title, [f"请回复消息后发送：{title}"])
+        ok, msg = await self._onebot_call(event, action, message_id=int(message_id))
+        return await self._image_result(event, f"{title}结果", [msg])
+
+    async def _set_group_setting_result(self, event: AstrMessageEvent, title: str, key: str, value: Any):
+        settings = self._group_settings(event)
+        settings[key] = value
+        self._save_stats()
+        if isinstance(value, bool):
+            value_text = "开启" if value else "关闭"
+        elif isinstance(value, int):
+            value_text = self._human_duration(value)
+        else:
+            value_text = str(value)
+        return await self._image_result(event, title, [f"已设置：{value_text}"])
+
+    async def _start_vote_mute(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        target = self._extract_target_user(event)
+        duration = self._extract_duration(event, 600)
+        if not group_id or not target:
+            return await self._image_result(event, "投票禁言", ["用法：投票禁言 <秒数> @群友"])
+        votes = self.stats.setdefault("votes", {})
+        votes[group_id] = {
+            "target": target[0],
+            "name": target[1],
+            "duration": duration,
+            "agree": [],
+            "disagree": [],
+            "created": int(time.time()),
+        }
+        self._save_stats()
+        return await self._image_result(
+            event,
+            "投票禁言",
+            [f"目标：{target[1] or target[0]}", f"时长：{self._human_duration(duration)}", "发送 赞同禁言 / 反对禁言 参与投票"],
+        )
+
+    async def _vote_mute_result(self, event: AstrMessageEvent, agree: bool):
+        group_id = self._group_id(event)
+        vote = self.stats.setdefault("votes", {}).get(group_id)
+        if not group_id or not vote:
+            return await self._image_result(event, "投票禁言", ["当前没有进行中的禁言投票。"])
+        user_id = str(event.get_sender_id())
+        vote["agree"] = [uid for uid in vote.get("agree", []) if uid != user_id]
+        vote["disagree"] = [uid for uid in vote.get("disagree", []) if uid != user_id]
+        vote["agree" if agree else "disagree"].append(user_id)
+        agree_count = len(set(vote.get("agree", [])))
+        disagree_count = len(set(vote.get("disagree", [])))
+        lines = [f"赞同：{agree_count}", f"反对：{disagree_count}"]
+        if agree_count >= 3 and agree_count > disagree_count:
+            ok, msg = await self._onebot_call(
+                event,
+                "set_group_ban",
+                group_id=int(group_id),
+                user_id=int(vote["target"]),
+                duration=int(vote.get("duration", 600)),
+            )
+            self.stats["votes"].pop(group_id, None)
+            lines.append(msg if ok else f"执行失败：{msg}")
+        self._save_stats()
+        return await self._image_result(event, "投票禁言", lines)
+
     async def _image_result(self, event: AstrMessageEvent, title: str, lines: list[str] | str):
         try:
             path = await self._render_card(event, title, lines)
@@ -267,6 +604,135 @@ class LanYangYangGroupManager(Star):
             logger.exception("生成懒羊羊图片失败")
             text = "\n".join(lines) if isinstance(lines, list) else str(lines)
             return event.plain_result(f"{title}\n{text}\n\n图片生成失败：{exc}")
+
+    async def _direct_result(self, event: AstrMessageEvent, text: str):
+        command = text.strip().lstrip("/")
+        if command in self._list_config("direct_menu_keywords", ["菜单", "帮助", "懒羊羊菜单"]):
+            return await self._image_result(event, "懒羊羊菜单", self._menu_lines())
+        if command in {"发言统计", "统计", "水群排行"}:
+            return await self._speech_rank_result(event)
+        if command in {"我的统计", "我水了多少"}:
+            return await self._my_speech_result(event)
+        if command in {"邀请排行", "邀请榜"}:
+            return await self._invite_rank_result(event)
+        if command in {"今日老公", "抽老公"}:
+            return await self._today_partner_result(event, "今日老公")
+        if command in {"今日老婆", "抽老婆"}:
+            return await self._today_partner_result(event, "今日老婆")
+        if command in {"今日小三", "抽小三"}:
+            return await self._today_partner_result(event, "今日小三")
+        return None
+
+    async def _moderation_result(self, event: AstrMessageEvent, text: str):
+        group_id = self._group_id(event)
+        user_id = str(event.get_sender_id() or "")
+        if not group_id or not user_id or not text or self._looks_like_command(text):
+            return None
+        settings = self._group_settings(event)
+        now = int(time.time())
+
+        if settings.get("night_curfew") and 0 <= int(time.strftime("%H", time.localtime(now))) < 6:
+            duration = 600
+            ok, msg = await self._onebot_call(event, "set_group_ban", group_id=int(group_id), user_id=int(user_id), duration=duration)
+            return await self._image_result(event, "宵禁提醒", [f"当前处于宵禁时间，禁言 {self._human_duration(duration)}。", msg])
+
+        words = list(settings.get("banned_words", []))
+        if settings.get("builtin_banned_words"):
+            words.extend(["广告", "代刷", "博彩", "贷款", "加群"])
+        hit = next((word for word in words if word and word in text), None)
+        if hit:
+            duration = int(settings.get("banned_word_mute_seconds", 600))
+            ok, msg = await self._onebot_call(event, "set_group_ban", group_id=int(group_id), user_id=int(user_id), duration=duration)
+            return await self._image_result(event, "禁词命中", [f"命中：{hit}", f"禁言：{self._human_duration(duration)}", msg])
+
+        spam_seconds = int(settings.get("spam_mute_seconds", 0) or 0)
+        if spam_seconds > 0 and self._is_spamming(group_id, user_id):
+            ok, msg = await self._onebot_call(event, "set_group_ban", group_id=int(group_id), user_id=int(user_id), duration=spam_seconds)
+            return await self._image_result(event, "刷屏禁言", [f"检测到短时间刷屏。", f"禁言：{self._human_duration(spam_seconds)}", msg])
+        return None
+
+    def _looks_like_command(self, text: str) -> bool:
+        clean = text.strip().lstrip("/")
+        return any(clean.startswith(name) for name in self._command_names())
+
+    async def _speech_rank_result(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        if not group_id:
+            return await self._image_result(event, "发言统计", ["这个功能要在群聊里用。"])
+        members = self.stats["groups"].get(group_id, {}).get("members", {})
+        ranking = sorted(
+            members.items(), key=lambda item: item[1].get("count", 0), reverse=True
+        )[:10]
+        if not ranking:
+            lines = ["还没有统计到发言。", "从现在开始我会记录群内发言。"]
+        else:
+            lines = [
+                f"{idx}. {info.get('name') or uid}: {info.get('count', 0)} 条 / {info.get('chars', 0)} 字"
+                for idx, (uid, info) in enumerate(ranking, 1)
+            ]
+        return await self._image_result(event, "本群发言排行", lines)
+
+    async def _my_speech_result(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        user_id = str(event.get_sender_id())
+        info = self.stats["groups"].get(group_id, {}).get("members", {}).get(user_id)
+        if not info:
+            lines = ["还没有统计到你的发言。", "你刚刚这句话之后就会开始计数。"]
+        else:
+            last = self._format_time(info.get("last_active"))
+            lines = [
+                f"昵称：{info.get('name') or event.get_sender_name()}",
+                f"发言：{info.get('count', 0)} 条",
+                f"字数：{info.get('chars', 0)} 字",
+                f"最近：{last}",
+            ]
+        return await self._image_result(event, "我的发言统计", lines)
+
+    async def _invite_rank_result(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        rows = self.stats["invites"].get(group_id, {})
+        ranking = sorted(rows.items(), key=lambda item: item[1].get("count", 0), reverse=True)[:10]
+        if not ranking:
+            lines = [
+                "暂时没有邀请记录。",
+                "协议端没上报邀请人时，可以用：记邀请 @邀请人",
+            ]
+        else:
+            lines = [
+                f"{idx}. {info.get('name') or uid}: 邀请 {info.get('count', 0)} 人"
+                for idx, (uid, info) in enumerate(ranking, 1)
+            ]
+        return await self._image_result(event, "邀请排行", lines)
+
+    async def _today_partner_result(self, event: AstrMessageEvent, title: str):
+        group_id = self._group_id(event)
+        members = self.stats["groups"].get(group_id, {}).get("members", {})
+        choices = [
+            (uid, info.get("name") or uid)
+            for uid, info in members.items()
+            if str(uid) and str(uid) != str(getattr(event.message_obj, "self_id", ""))
+        ]
+        if not choices:
+            return await self._image_result(event, title, ["群里还没有可抽取成员。", "先让大家发几句话再试试。"])
+
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        seed = f"{group_id}:{today}:{title}"
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+        uid, name = choices[int(digest[:8], 16) % len(choices)]
+        anime = self._load_random_anime_image(title)
+        lines = [
+            f"{title}：{name}",
+            f"QQ：{uid}",
+            "今日缘分已盖章，明天再换。",
+        ]
+        try:
+            img = self._render_today_image(event, title, lines, anime)
+            path = self.cache_dir / f"today_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
+            img.save(path, "PNG", optimize=True)
+            return event.chain_result([Comp.Image.fromFileSystem(str(path))])
+        except Exception as exc:
+            logger.exception("生成今日抽取图片失败")
+            return event.plain_result(f"{title}\n" + "\n".join(lines) + f"\n\n图片生成失败：{exc}")
 
     async def _render_card(self, event: AstrMessageEvent, title: str, lines: list[str] | str) -> Path:
         if Image is None:
@@ -287,40 +753,43 @@ class LanYangYangGroupManager(Star):
         return path
 
     def _render_menu_image(self, event: AstrMessageEvent):
-        width, height = 980, 560
-        img = Image.new("RGBA", (width, height), "#fff1a6")
+        width, height = 980, 980
+        img = self._load_reply_background(width, height) or Image.new("RGBA", (width, height), "#fff1a6")
         draw = ImageDraw.Draw(img)
 
-        panel = (26, 26, width - 26, height - 26)
-        draw.rounded_rectangle(panel, radius=38, fill="#ffe493", outline="#9c7441", width=4)
-        self._draw_checker_pattern(draw, panel, cell=34)
+        panel = (34, 34, width - 34, height - 34)
+        draw.rounded_rectangle(panel, radius=38, outline="#7e5c3a", width=4)
         self._draw_corner_sparkles(draw, width, height)
 
-        self._draw_sheep_car(draw, 255, 312)
-        self._draw_mini_sheep(draw, 835, 112, scale=0.92)
-        self._draw_mini_sheep(draw, 880, 438, scale=0.72)
-        self._draw_mini_sheep(draw, 108, 446, scale=0.62)
-
-        font_title = self._font(50, bold=True)
-        font_pill = self._font(31, bold=True)
+        font_title = self._font(48, bold=True)
+        font_body = self._font(22, bold=True)
         font_small = self._font(21)
-        font_badge = self._font(24, bold=True)
-        font_meta = self._font(22)
-
-        draw.text((520, 70), "懒羊羊大王", font=font_title, fill="#7b2638")
         sender_name = event.get_sender_name() or str(event.get_sender_id())
-        draw.text((50, 36), f"LV26 黄金  {sender_name}", font=font_meta, fill="#8c7f67")
+        draw.text((82, 72), "懒羊羊群管菜单", font=font_title, fill="#7b2638", stroke_width=2, stroke_fill="#fff3cd")
+        draw.text((84, 130), f"呼叫人：{sender_name}", font=font_small, fill="#8f5a3b")
 
-        labels = ["群管", "保安", "统计", "时规", "乐园"]
-        y = 145
-        for idx, label in enumerate(labels, 1):
-            self._draw_menu_pill(draw, 485, y, 345, 52, idx, label, font_pill)
-            y += 74
+        left_box = (70, 174, 470, height - 86)
+        right_box = (510, 174, 910, height - 86)
+        for box in (left_box, right_box):
+            draw.rounded_rectangle(box, radius=28, fill=(255, 254, 246, 232), outline="#efd27a", width=3)
 
-        draw.text((82, 82), "Ww", font=font_badge, fill="#fff7df", stroke_width=3, stroke_fill="#a9804a")
-        draw.text((486, 504), "菜单 / 统计 / 禁言 / 撤回 / 踢出群", font=font_small, fill="#8f5a3b")
-        draw.text((812, 39), "⌒", font=self._font(34, bold=True), fill="#8a6b48")
+        lines = self._menu_lines()
+        midpoint = (len(lines) + 1) // 2
+        self._draw_menu_lines(draw, left_box, lines[:midpoint], font_body)
+        self._draw_menu_lines(draw, right_box, lines[midpoint:], font_body)
+
+        draw.text((68, height - 62), "所有命令回复都会生成懒羊羊背景图片", font=font_small, fill="#8f5a3b", stroke_width=1, stroke_fill="#fff3cd")
         return img.convert("RGB")
+
+    def _draw_menu_lines(self, draw: Any, box: tuple[int, int, int, int], lines: list[str], font: Any):
+        x = box[0] + 28
+        y = box[1] + 24
+        for line in lines:
+            wrapped = self._wrap_text(line, max_chars=19)
+            for part in wrapped:
+                draw.text((x, y), part, font=font, fill="#6c3040")
+                y += 30
+            y += 6
 
     def _render_reply_image(self, event: AstrMessageEvent, title: str, raw_lines: list[str]):
         width = 980
@@ -367,6 +836,69 @@ class LanYangYangGroupManager(Star):
 
         draw.text((68, height - 62), "懒羊羊主题卡片回复", font=font_small, fill="#8f5a3b")
         return img.convert("RGB")
+
+    def _render_today_image(self, event: AstrMessageEvent, title: str, lines: list[str], anime: Any = None):
+        width, height = 980, 620
+        if anime:
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            img = ImageOps.fit(anime.convert("RGBA"), (width, height), method=resample, centering=(0.5, 0.35))
+            veil = Image.new("RGBA", (width, height), (24, 16, 28, 74))
+            img = Image.alpha_composite(img, veil)
+        else:
+            img = Image.new("RGBA", (width, height), "#1f1b2e")
+        draw = ImageDraw.Draw(img)
+        panel = (34, 34, width - 34, height - 34)
+        draw.rounded_rectangle(panel, radius=38, outline="#f5d67b", width=4)
+        self._draw_corner_sparkles(draw, width, height)
+
+        if anime:
+            portrait = ImageOps.fit(anime.convert("RGBA"), (330, 410), method=resample, centering=(0.5, 0.35))
+            mask = Image.new("L", portrait.size, 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle((0, 0, portrait.width, portrait.height), radius=28, fill=255)
+            img.paste(portrait, (590, 144), mask)
+            draw.rounded_rectangle((590, 144, 920, 554), radius=28, outline="#efd27a", width=4)
+
+        font_title = self._font(48, bold=True)
+        font_body = self._font(31, bold=True)
+        font_small = self._font(22)
+        sender_name = event.get_sender_name() or str(event.get_sender_id())
+        draw.text((86, 76), title, font=font_title, fill="#fff3cd", stroke_width=2, stroke_fill="#5a2030")
+        draw.text((88, 134), f"呼叫人：{sender_name}", font=font_small, fill="#f5d67b", stroke_width=1, stroke_fill="#5a2030")
+
+        box = (76, 182, 548, 502)
+        draw.rounded_rectangle(box, radius=28, fill=(255, 254, 246, 226), outline="#efd27a", width=3)
+        y = 216
+        for line in lines:
+            for part in self._wrap_text(line, max_chars=16):
+                draw.text((108, y), part, font=font_body, fill="#6c3040")
+                y += 48
+            y += 8
+        draw.text((70, height - 60), "今日缘分卡 | 二次元随机图", font=font_small, fill="#fff3cd", stroke_width=1, stroke_fill="#5a2030")
+        return img.convert("RGB")
+
+    def _load_random_anime_image(self, key: str):
+        anime_dir = self.base_dir / "assets" / "anime"
+        all_files = sorted(
+            path for path in anime_dir.glob("*")
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+        )
+        if "老公" in key:
+            files = [path for path in all_files if path.name.startswith(("inuyasha_1", "parasyte_"))]
+        elif "老婆" in key:
+            files = [path for path in all_files if path.name.startswith(("edgerunners_", "inuyasha_2"))]
+        else:
+            files = all_files
+        if not files:
+            return None
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        digest = hashlib.sha256(f"{today}:{key}:anime".encode("utf-8")).hexdigest()
+        path = files[int(digest[:8], 16) % len(files)]
+        try:
+            return Image.open(path).convert("RGBA")
+        except Exception:
+            logger.exception("加载二次元图片失败：%s", path)
+            return None
 
     def _load_reply_background(self, width: int, height: int):
         path = self.base_dir / "assets" / "lanyangyang_reply_bg.png"
@@ -483,8 +1015,13 @@ class LanYangYangGroupManager(Star):
 
     def _font(self, size: int, bold: bool = False):
         candidates = [
+            str(self.base_dir / "assets" / "fonts" / "wqy-microhei.ttc"),
+            str(self.base_dir / "assets" / "fonts" / "NotoSansCJKsc-Regular.otf"),
             "C:/Windows/Fonts/msyh.ttc",
             "C:/Windows/Fonts/simhei.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
@@ -546,6 +1083,7 @@ class LanYangYangGroupManager(Star):
                     "message_id": str(message_id),
                     "user_id": user_id,
                     "name": member["name"],
+                    "text": (event.message_str or "")[:120],
                     "time": int(time.time()),
                 }
             )
@@ -574,15 +1112,18 @@ class LanYangYangGroupManager(Star):
 
     def _load_stats(self) -> dict:
         if not self.data_file.exists():
-            return {"groups": {}, "invites": {}}
+            return {"groups": {}, "invites": {}, "daily": {}, "settings": {}, "votes": {}}
         try:
             data = json.loads(self.data_file.read_text(encoding="utf-8"))
             data.setdefault("groups", {})
             data.setdefault("invites", {})
+            data.setdefault("daily", {})
+            data.setdefault("settings", {})
+            data.setdefault("votes", {})
             return data
         except Exception:
             logger.exception("读取懒羊羊统计数据失败，已重新初始化。")
-            return {"groups": {}, "invites": {}}
+            return {"groups": {}, "invites": {}, "daily": {}, "settings": {}, "votes": {}}
 
     def _save_stats(self):
         self.data_file.write_text(
@@ -599,6 +1140,26 @@ class LanYangYangGroupManager(Star):
         except Exception as exc:
             logger.exception("OneBot API 调用失败：%s", action)
             return False, str(exc)
+
+    async def _onebot_call_raw(self, event: AstrMessageEvent, action: str, **payload):
+        if event.get_platform_name() != "aiocqhttp" or not hasattr(event, "bot"):
+            return False, "当前平台不是 aiocqhttp/OneBot，不能执行这个群管动作。"
+        try:
+            return True, await event.bot.api.call_action(action, **payload)
+        except Exception as exc:
+            logger.exception("OneBot API 调用失败：%s", action)
+            return False, str(exc)
+
+    def _group_settings(self, event: AstrMessageEvent) -> dict:
+        group_id = self._group_id(event) or "private"
+        settings = self.stats.setdefault("settings", {}).setdefault(group_id, {})
+        settings.setdefault("banned_words", [])
+        settings.setdefault("banned_word_mute_seconds", 600)
+        settings.setdefault("builtin_banned_words", False)
+        settings.setdefault("spam_mute_seconds", 0)
+        settings.setdefault("night_curfew", False)
+        settings.setdefault("join_approval", False)
+        return settings
 
     def _extract_target_user(self, event: AstrMessageEvent) -> tuple[str, str] | None:
         bot_id = str(getattr(event.message_obj, "self_id", "") or "")
@@ -663,6 +1224,29 @@ class LanYangYangGroupManager(Star):
         nums = re.findall(r"\b\d+\b", self._command_args(event))
         return nums[0] if nums else None
 
+    def _clean_command_text(self, event: AstrMessageEvent) -> str:
+        text = self._command_args(event)
+        text = re.sub(r"\[CQ:[^\]]+\]", " ", text)
+        text = re.sub(r"\b\d{5,12}\b", " ", text)
+        for item in event.get_messages():
+            qq = getattr(item, "qq", None)
+            if qq:
+                text = text.replace(str(qq), " ")
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _extract_image_url(self, event: AstrMessageEvent) -> str | None:
+        for item in event.get_messages():
+            for attr in ("url", "file", "path"):
+                value = getattr(item, attr, None)
+                if value and item.__class__.__name__.lower() in {"image", "picture"}:
+                    return str(value)
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, str):
+            match = re.search(r"\[CQ:image,[^\]]*(?:url|file)=([^,\]]+)", raw)
+            if match:
+                return match.group(1)
+        return None
+
     def _recent_message_ids(
         self,
         group_id: str,
@@ -683,13 +1267,38 @@ class LanYangYangGroupManager(Star):
                 break
         return ids
 
+    def _is_spamming(self, group_id: str, user_id: str) -> bool:
+        now = int(time.time())
+        history = self.stats["groups"].get(group_id, {}).get("history", [])
+        recent = [
+            row for row in reversed(history)
+            if str(row.get("user_id")) == str(user_id) and now - int(row.get("time", 0)) <= 10
+        ][:6]
+        if len(recent) >= 5:
+            return True
+        texts = [str(row.get("text", "")) for row in recent if row.get("text")]
+        return len(texts) >= 3 and len(set(texts[:3])) == 1
+
     def _command_args(self, event: AstrMessageEvent) -> str:
         text = (event.message_str or "").strip()
         text = text.lstrip("/")
-        names = [
+        names = self._command_names()
+        for name in sorted(names, key=len, reverse=True):
+            if text.startswith(name):
+                return text[len(name) :].strip()
+        return text
+
+    def _command_names(self) -> list[str]:
+        return [
             "菜单",
             "帮助",
             "懒羊羊菜单",
+            "今日老公",
+            "抽老公",
+            "今日老婆",
+            "抽老婆",
+            "今日小三",
+            "抽小三",
             "发言统计",
             "统计",
             "水群排行",
@@ -701,22 +1310,52 @@ class LanYangYangGroupManager(Star):
             "登记邀请",
             "禁言",
             "闭嘴",
+            "禁我",
             "解禁",
             "解除禁言",
+            "开启全禁",
+            "关闭全禁",
+            "全禁",
+            "解除全禁",
+            "改名",
+            "设置群名片",
+            "改我",
+            "头衔",
+            "改头衔",
+            "申请头衔",
             "撤回",
             "删",
             "批量撤回",
             "批撤",
             "踢出群",
             "踢出",
+            "踢了",
             "踢",
             "踢黑",
             "拉黑踢出",
+            "拉黑",
+            "上管",
+            "下管",
+            "设精",
+            "设置精华",
+            "移精",
+            "移除精华",
+            "查看群精华",
+            "设置群头像",
+            "设置群名",
+            "发布群公告",
+            "查看群公告",
+            "禁词禁言",
+            "设置禁词",
+            "内置禁词",
+            "刷屏禁言",
+            "投票禁言",
+            "赞同禁言",
+            "反对禁言",
+            "开启宵禁",
+            "关闭宵禁",
+            "进群审核",
         ]
-        for name in sorted(names, key=len, reverse=True):
-            if text.startswith(name):
-                return text[len(name) :].strip()
-        return text
 
     def _member_name_from_stats(self, event: AstrMessageEvent, user_id: str) -> str:
         group_id = self._group_id(event)
@@ -781,14 +1420,25 @@ class LanYangYangGroupManager(Star):
 
     def _menu_lines(self) -> list[str]:
         return [
-            "菜单：无需 /，直接发送“菜单”",
-            "发言统计 / 我的统计",
+            "菜单 / 发言统计 / 我的统计",
+            "今日老公 / 今日老婆 / 今日小三",
             "邀请排行 / 记邀请 @邀请人",
-            "禁言 @成员 10m / 解禁 @成员",
-            "回复消息后：撤回",
-            "批量撤回 5 / 批量撤回 @成员 10",
-            "踢出群 @成员 / 踢黑 @成员",
-            "喊“懒羊羊回家”或艾特机器人，会偶尔语音/图片回怼",
+            "禁言 <秒数> @群友 / 禁我 <秒数>",
+            "解禁 @群友 / 开启全禁 / 关闭全禁",
+            "改名 xxx @群友 / 改我 xxx",
+            "头衔 xxx @群友 / 申请头衔 xxx",
+            "踢了 @群友 / 拉黑 @群友",
+            "上管 @群友 / 下管 @群友",
+            "回复消息：设精 / 移精 / 撤回",
+            "查看群精华 / 设置群头像",
+            "设置群名 xxx / 发布群公告 xxx",
+            "查看群公告 / 批量撤回 5",
+            "禁词禁言 <秒数> / 设置禁词",
+            "内置禁词 开/关 / 刷屏禁言 <秒数>",
+            "投票禁言 <秒数> @群友",
+            "赞同禁言 / 反对禁言",
+            "开启宵禁 / 关闭宵禁 / 进群审核",
+            "喊“懒羊羊回家”会偶尔语音/图片回怼",
         ]
 
     def _list_config(self, key: str, default: list[str]) -> list[str]:
